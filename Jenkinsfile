@@ -18,13 +18,13 @@ pipeline {
             }
         }
 
-        stage('Debug') {
+        stage('Debug 2') {
             steps {
                 sh 'pwd'
                 sh 'ls -l'
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
