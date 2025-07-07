@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def load_and_preprocess_data(file_path="weather_paris.csv"):
+def load_and_preprocess_data(file_path="data/weather_paris.csv"):
     """Load and preprocess the weather data."""
     # Load Fichier CSV 
     paris_df = pd.read_csv(file_path)

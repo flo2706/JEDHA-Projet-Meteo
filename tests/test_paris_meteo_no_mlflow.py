@@ -7,10 +7,7 @@ from unittest.mock import patch, MagicMock
 import sys
 import os
 
-# Ajouter le répertoire parent au path pour pouvoir importer le module
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from paris_meteo_no_mlflow import (
+from app.paris_meteo_no_mlflow import (
     load_and_preprocess_data,
     encode_target_variable,
     prepare_features_and_target,
@@ -158,7 +155,7 @@ class TestDataSplitting:
 class TestModelTraining:
     """Tests pour l'entraînement du modèle."""
 
-    @patch('paris_meteo_no_mlflow.XGBClassifier')
+    @patch('app.paris_meteo_no_mlflow.XGBClassifier')
     def test_train_model(self, mock_xgb, sample_csv_file):
         """Test de l'entraînement du modèle."""
         # Mock du modèle XGBoost
