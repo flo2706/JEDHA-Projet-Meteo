@@ -4,7 +4,12 @@ pipeline {
     environment {
         DOCKER_IMAGE = 'projet-meteo'
     }
-
+    stage('Debug') {
+        steps {
+            sh 'pwd'
+            sh 'ls -l'
+        }
+    }  
     stages {
         stage('Clone Repository') {
             steps {
