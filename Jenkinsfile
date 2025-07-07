@@ -12,19 +12,6 @@ pipeline {
             }
         }
 
-        stage('Clone Repository') {
-            steps {
-                git 'https://github.com/jdmnl/JEDHA-Projet-Meteo.git'
-            }
-        }
-
-        stage('Debug 2') {
-            steps {
-                sh 'pwd'
-                sh 'ls -l'
-            }
-        }
-
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
