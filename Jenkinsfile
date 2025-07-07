@@ -4,13 +4,12 @@ pipeline {
     environment {
         DOCKER_IMAGE = 'projet-meteo'
     }
-    stage('Debug') {
+    stages {
         steps {
             sh 'pwd'
             sh 'ls -l'
         }
-    }  
-    stages {
+
         stage('Clone Repository') {
             steps {
                 git 'https://github.com/jdmnl/JEDHA-Projet-Meteo.git'
