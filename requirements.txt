@@ -1,0 +1,11 @@
+pandas
+scikit-learn
+joblib
+pytest
+great_expectations
+pandas
+numpy
+mlflow
+xgboost
+boto3
+dotenv
