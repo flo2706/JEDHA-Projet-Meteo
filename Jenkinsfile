@@ -15,13 +15,15 @@ pipeline {
 
         stage('Install & Run Unit Tests') {
             steps {
-                sh '''
+               sh '''
                     python3 -m venv venv
                     . venv/bin/activate
                     pip install --upgrade pip
                     pip install -r requirements.txt
+                    pip install pytest-html  # Ajoute cette ligne si ce n’est pas dans requirements.txt
                     PYTHONPATH=. pytest tests/ --junitxml=unit-tests.xml --html=report.html --self-contained-html
                 '''
+
             }
             post {
                 always {
