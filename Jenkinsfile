@@ -20,12 +20,20 @@ pipeline {
                     . venv/bin/activate
                     pip install --upgrade pip
                     pip install -r requirements.txt
-                    PYTHONPATH=. pytest tests/ --junitxml=unit-tests.xml
+                    PYTHONPATH=. pytest tests/ --junitxml=unit-tests.xml --html=report.html --self-contained-html
                 '''
             }
             post {
                 always {
                     junit 'unit-tests.xml'
+                    publishHTML([ 
+                        reportName: 'Test Report',
+                        reportDir: '.',
+                        reportFiles: 'report.html',
+                        keepAll: true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing: false
+                    ])
                 }
             }
         }
