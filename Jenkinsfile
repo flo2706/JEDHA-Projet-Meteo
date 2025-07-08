@@ -26,7 +26,7 @@ pipeline {
             post {
                 always {
                     junit 'unit-tests.xml'
-                    publishHTML([ 
+                    publishHTML([
                         reportName: 'Test Report',
                         reportDir: '.',
                         reportFiles: 'report.html',
