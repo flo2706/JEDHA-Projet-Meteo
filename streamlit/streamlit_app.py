@@ -4,6 +4,9 @@ import boto3
 import folium
 from streamlit_folium import st_folium
 from io import StringIO
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+
+from babel.dates import format_datetime
 
 # --- Configuration S3
 BUCKET_NAME = "my-jedha-bucket"
@@ -26,9 +29,16 @@ if df.empty:
     st.warning("Le fichier de prédictions est vide.")
     st.stop()
 
-# --- Détection de la dernière date d'exécution
+# --- Conversion des dates avec fuseau horaire français
+df["execution_date"] = pd.to_datetime(df["execution_date"], utc=True)
+df["execution_date"] = df["execution_date"].dt.tz_convert("Europe/Paris")
+
+# --- Sélection de la dernière date
 latest_date = df["execution_date"].max()
 latest_df = df[df["execution_date"] == latest_date]
+
+# --- Format de la date en français avec heure complète
+formatted_date = format_datetime(latest_date, "d MMMM y 'à' HH:mm:ss", locale='fr_FR')
 
 # --- Choix des icônes météo
 weather_icons = {
@@ -57,5 +67,6 @@ for _, row in latest_df.iterrows():
         icon=folium.CustomIcon(icon_url, icon_size=(40, 40))
     ).add_to(m)
 
-st.subheader(f"🗺️ Prédictions météo du {latest_date}")
+# --- Affichage de la carte avec la date locale formatée
+st.subheader(f"🗺️ Prédictions météo du {formatted_date}")
 st_folium(m, width=800, height=600)
