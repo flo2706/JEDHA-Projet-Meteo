@@ -594,24 +594,33 @@ def make_prediction(**context):
                 X_realtime = X_realtime[expected_features]
                 print(f"  Features adjusted to match training data")
                 
-            elif hasattr(model, 'feature_names_in_'):
-                # Fallback sur les features du modèle si disponibles
-                expected_features = model.feature_names_in_
-                missing_features = set(expected_features) - set(current_features)
-                extra_features = set(current_features) - set(expected_features)
-                
+            # Si on n'a pas pu déterminer les features attendues, essayer de deviner par le nombre de colonnes
+            if expected_features is None:
+                if hasattr(model, 'feature_names_in_'):
+                    expected_features = list(model.feature_names_in_)
+                elif hasattr(model, 'n_features_in_'):
+                    # Prendre les n premières colonnes
+                    n = model.n_features_in_
+                    if X_realtime.shape[1] > n:
+                        print(f"  [AUTO] Trimming features to first {n} columns for model input")
+                        X_realtime = X_realtime.iloc[:, :n]
+                    elif X_realtime.shape[1] < n:
+                        raise ValueError(f"Not enough features for model: expected {n}, got {X_realtime.shape[1]}")
+                else:
+                    raise ValueError("Cannot determine expected features for the model. Please check your training pipeline.")
+
+            # Si on a la liste des features attendues, forcer la sélection
+            if expected_features is not None:
+                missing_features = set(expected_features) - set(X_realtime.columns)
+                extra_features = set(X_realtime.columns) - set(expected_features)
                 if missing_features:
-                    print(f"  Warning: Missing features: {missing_features}")
+                    print(f"  [AUTO] Adding missing features with default values: {missing_features}")
                     for feature in missing_features:
                         X_realtime[feature] = 0
-                        print(f"  Added missing feature '{feature}' with default value 0")
-                
                 if extra_features:
-                    print(f"  Warning: Extra features will be ignored: {extra_features}")
-                
-                # Réorganiser les colonnes dans l'ordre attendu
+                    print(f"  [AUTO] Removing extra features: {extra_features}")
                 X_realtime = X_realtime[expected_features]
-                print(f"  Features reordered to match model expectations")
+                print(f"  [AUTO] Final feature shape for prediction: {X_realtime.shape}")
             
             print(f"  Final feature shape for prediction: {X_realtime.shape}")
             
