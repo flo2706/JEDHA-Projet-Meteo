@@ -11,6 +11,8 @@ from sklearn.preprocessing import LabelEncoder
 import mlflow
 import mlflow.xgboost
 from dotenv import load_dotenv
+import boto3
+from botocore.exceptions import ClientError
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -34,7 +36,7 @@ dag = DAG(
     'real_time_weather_prediction',
     default_args=default_args,
     description='Prédiction météo en temps réel avec MLflow et OpenWeather API',
-    schedule_interval=timedelta(hours=1),  # Exécution toutes les heures
+    schedule_interval=timedelta(minutes=5),  # Exécution toutes les 5 minutes
     catchup=False,
     tags=['ml', 'weather', 'prediction', 'real-time', 'openweather', 'mlflow'],
 )
@@ -44,8 +46,15 @@ MODEL_PATH = '/opt/airflow/models'
 PREDICTIONS_PATH = '/opt/airflow/predictions'
 OPENWEATHER_API_URL = "https://api.openweathermap.org/data/3.0/onecall"
 API_KEY = "8021a55eaa75f382697bb1956b2589b4"
-LATITUDE = 48.8566  # Paris latitude (correspond à l'API testée)
-LONGITUDE = 2.3522  # Paris longitude (correspond à l'API testée)
+
+# Configuration des villes pour les prédictions
+CITIES = {
+    'paris': {'lat': 48.8566, 'lon': 2.3522, 'name': 'Paris'},
+    'toulouse': {'lat': 43.6047, 'lon': 1.4442, 'name': 'Toulouse'},
+    'lyon': {'lat': 45.7640, 'lon': 4.8357, 'name': 'Lyon'},
+    'marseille': {'lat': 43.2965, 'lon': 5.3698, 'name': 'Marseille'},
+    'nantes': {'lat': 47.2184, 'lon': -1.5536, 'name': 'Nantes'}
+}
 
 # Mapping des conditions météo OpenWeather vers nos classes
 WEATHER_MAPPING = {
@@ -108,7 +117,7 @@ def setup_mlflow():
         print(f"Using MLflow URI from Airflow variable: {mlflow_uri}")
     except Exception as e:
         # Fallback vers l'adresse par défaut si la variable n'existe pas
-        mlflow_uri = "https://f8fc-91-164-131-62.ngrok-free.app"
+        mlflow_uri = "https://sbiwi-mlflow-server-demo.hf.space"
         print(f"MLflow URI variable not found, using default: {mlflow_uri}")
         print(f"Error: {str(e)}")
     
@@ -118,17 +127,113 @@ def setup_mlflow():
 
 
 def fetch_weather_data(**context):
-    """Tâche 1: Récupérer les données météo en temps réel depuis OpenWeather API"""
-    print("Fetching real-time weather data from OpenWeather API...")
+    """Tâche 1: Récupérer les données météo en temps réel depuis OpenWeather API pour toutes les villes"""
+    print("Fetching real-time weather data from OpenWeather API for all cities...")
     
-    # Construire l'URL de l'API
-    params = {
-        'lat': LATITUDE,
-        'lon': LONGITUDE,
-        'appid': API_KEY,
-        'units': 'metric',  # Températures en Celsius
-        'exclude': 'minutely,alerts'  # Exclure les données non nécessaires
-    }
+    all_cities_data = {}
+    
+    for city_key, city_info in CITIES.items():
+        print(f"\nFetching weather data for {city_info['name']}...")
+        
+        # Construire l'URL de l'API pour cette ville
+        params = {
+            'lat': city_info['lat'],
+            'lon': city_info['lon'],
+            'appid': API_KEY,
+            'units': 'metric',  # Températures en Celsius
+            'exclude': 'minutely,alerts'  # Exclure les données non nécessaires
+        }
+        
+        try:
+            # Faire l'appel API
+            response = requests.get(OPENWEATHER_API_URL, params=params, timeout=30)
+            response.raise_for_status()
+            
+            weather_data = response.json()
+            print(f"API Response received successfully for {city_info['name']}")
+            
+            # Extraire les données actuelles
+            current = weather_data['current']
+            current_time = datetime.fromtimestamp(current['dt'])
+            
+            # Préparer les données pour la prédiction
+            weather_features = {
+                'city': city_info['name'],
+                'city_key': city_key,
+                'datetime': current_time,
+                'temp': current['temp'],
+                'feels_like': current['feels_like'],
+                'pressure': current['pressure'],
+                'humidity': current['humidity'],
+                'dew_point': current['dew_point'],
+                'uvi': current['uvi'],
+                'clouds': current['clouds'],
+                'visibility': current.get('visibility', 10000),  # défaut 10km si absent
+                'wind_speed': current['wind_speed'],
+                'wind_deg': current.get('wind_deg', 0),  # défaut 0 si absent
+                'weather_main': current['weather'][0]['main'],
+                'weather_description': current['weather'][0]['description'],
+                # Ajouter des champs supplémentaires si disponibles
+                'sunrise': weather_data['current'].get('sunrise', 0),
+                'sunset': weather_data['current'].get('sunset', 0),
+                'lat': city_info['lat'],
+                'lon': city_info['lon']
+            }
+            
+            # Ajouter les données de précipitations si disponibles
+            if 'rain' in current:
+                weather_features['rain_1h'] = current['rain'].get('1h', 0)
+            else:
+                weather_features['rain_1h'] = 0
+                
+            if 'snow' in current:
+                weather_features['snow_1h'] = current['snow'].get('1h', 0)
+            else:
+                weather_features['snow_1h'] = 0
+            
+            print(f"Current weather in {city_info['name']}: {weather_features['weather_main']} - {weather_features['weather_description']}")
+            print(f"Temperature: {weather_features['temp']}°C")
+            print(f"Humidity: {weather_features['humidity']}%")
+            
+            # Sauvegarder les données brutes
+            os.makedirs(PREDICTIONS_PATH, exist_ok=True)
+            raw_data_path = f"{PREDICTIONS_PATH}/raw_weather_data_{city_key}_{current_time.strftime('%Y%m%d_%H%M%S')}.json"
+            
+            # Préparer les données pour la sérialisation JSON (convertir datetime en string)
+            weather_features_serializable = weather_features.copy()
+            weather_features_serializable['datetime'] = current_time.isoformat()
+            
+            # Sérialiser de manière sécurisée toute la réponse API
+            safe_weather_data = safe_json_serialize(weather_data)
+            
+            with open(raw_data_path, 'w') as f:
+                json.dump({
+                    'timestamp': current_time.isoformat(),
+                    'city': city_info['name'],
+                    'city_key': city_key,
+                    'weather_features': weather_features_serializable,
+                    'full_response': safe_weather_data
+                }, f, indent=2)
+            
+            # Stocker les données de cette ville
+            all_cities_data[city_key] = {
+                'raw_data_path': raw_data_path,
+                'weather_features': weather_features_serializable,
+                'city_info': city_info
+            }
+            
+            print(f"✓ Weather data saved for {city_info['name']}")
+            
+        except Exception as e:
+            print(f"❌ Error fetching weather data for {city_info['name']}: {str(e)}")
+            # Continuer avec les autres villes même si une échoue
+            continue
+    
+    if not all_cities_data:
+        raise ValueError("Could not fetch weather data for any city")
+    
+    print(f"\n✅ Successfully fetched weather data for {len(all_cities_data)} cities: {list(all_cities_data.keys())}")
+    return all_cities_data
     
     try:
         # Faire l'appel API
@@ -214,78 +319,85 @@ def fetch_weather_data(**context):
 
 
 def preprocess_realtime_data(**context):
-    """Tâche 2: Préprocesser les données en temps réel pour la prédiction"""
-    print("Preprocessing real-time weather data...")
+    """Tâche 2: Préprocesser les données en temps réel pour la prédiction de toutes les villes"""
+    print("Preprocessing real-time weather data for all cities...")
     
     # Récupérer les données de la tâche précédente
     ti = context['ti']
-    weather_info = ti.xcom_pull(task_ids='fetch_weather_data')
-    weather_features = weather_info['weather_features']
+    all_cities_data = ti.xcom_pull(task_ids='fetch_weather_data')
     
-    # Créer un DataFrame avec les données actuelles
-    df = pd.DataFrame([weather_features])
+    if not all_cities_data:
+        raise ValueError("No weather data received from fetch_weather_data task")
     
-    # Appliquer le même preprocessing que durant l'entraînement
-    df['datetime'] = pd.to_datetime(df['datetime'])
+    processed_cities = {}
     
-    # Feature engineering temporel
-    df['hour'] = df['datetime'].dt.hour
-    df['day'] = df['datetime'].dt.day
-    df['month'] = df['datetime'].dt.month
-    df['weekday'] = df['datetime'].dt.weekday
-    df['is_weekend'] = df['weekday'].apply(lambda x: 1 if x >= 5 else 0)
+    for city_key, city_data in all_cities_data.items():
+        print(f"\nProcessing data for {city_data['city_info']['name']}...")
+        weather_features = city_data['weather_features']
+        
+        # Créer un DataFrame avec les données actuelles
+        df = pd.DataFrame([weather_features])
+        
+        # Appliquer le même preprocessing que durant l'entraînement
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        
+        # Feature engineering temporel
+        df['hour'] = df['datetime'].dt.hour
+        df['day'] = df['datetime'].dt.day
+        df['month'] = df['datetime'].dt.month
+        df['weekday'] = df['datetime'].dt.weekday
+        df['is_weekend'] = df['weekday'].apply(lambda x: 1 if x >= 5 else 0)
+        
+        # Features cycliques
+        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+        df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
+        df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
+        
+        # Mapper la condition météo actuelle vers nos classes d'entraînement
+        current_weather = df['weather_main'].iloc[0]
+        mapped_weather = WEATHER_MAPPING.get(current_weather, current_weather)
+        df['weather_main_mapped'] = mapped_weather
+        
+        print(f"  Original weather: {current_weather}, Mapped to: {mapped_weather}")
+        
+        # Supprimer les colonnes non nécessaires pour la prédiction
+        columns_to_drop = [
+            'datetime', 'weather_main', 'weather_description', 'weather_main_mapped',
+            'sunrise', 'sunset', 'snow_1h', 'city', 'city_key'
+        ]
+        
+        available_columns = [col for col in columns_to_drop if col in df.columns]
+        feature_columns = [col for col in df.columns if col not in available_columns]
+        
+        X_realtime = df[feature_columns]
+        
+        print(f"  Preprocessed features shape: {X_realtime.shape}")
+        print(f"  Features: {list(X_realtime.columns)}")
+        
+        # Vérifier que nous avons des valeurs numériques valides
+        for col in X_realtime.columns:
+            if X_realtime[col].iloc[0] is None or pd.isna(X_realtime[col].iloc[0]):
+                print(f"  Warning: Feature {col} has null value, setting to 0")
+                X_realtime[col] = X_realtime[col].fillna(0)
+        
+        # Sauvegarder les données préprocessées pour cette ville
+        timestamp_str = weather_features['datetime'].replace(':', '-')
+        preprocessed_path = f"{PREDICTIONS_PATH}/preprocessed_data_{city_key}_{timestamp_str}.pkl"
+        X_realtime.to_pickle(preprocessed_path)
+        
+        processed_cities[city_key] = {
+            'preprocessed_path': preprocessed_path,
+            'actual_weather': mapped_weather,
+            'timestamp': weather_features['datetime'],
+            'original_features': weather_features,
+            'city_info': city_data['city_info']
+        }
+        
+        print(f"  ✓ Data processed and saved for {city_data['city_info']['name']}")
     
-    # Features cycliques
-    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
-    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
-    
-    # Mapper la condition météo actuelle vers nos classes d'entraînement
-    current_weather = df['weather_main'].iloc[0]
-    mapped_weather = WEATHER_MAPPING.get(current_weather, current_weather)
-    df['weather_main_mapped'] = mapped_weather
-    
-    print(f"Original weather: {current_weather}, Mapped to: {mapped_weather}")
-    
-    # Supprimer les colonnes non nécessaires pour la prédiction
-    # Garder seulement les features qui étaient disponibles durant l'entraînement
-    columns_to_drop = [
-        'datetime', 'weather_main', 'weather_description', 'weather_main_mapped',
-        'sunrise', 'sunset',  # Supprimer les nouvelles colonnes non utilisées dans l'entraînement
-        'snow_1h'  # Garder rain_1h mais supprimer snow_1h (moins commun)
-    ]
-    
-    available_columns = [col for col in columns_to_drop if col in df.columns]
-    feature_columns = [col for col in df.columns if col not in available_columns]
-    
-    print(f"Columns to drop: {[col for col in columns_to_drop if col in df.columns]}")
-    print(f"Remaining feature columns: {feature_columns}")
-    
-    X_realtime = df[feature_columns]
-    
-    print(f"Preprocessed features shape: {X_realtime.shape}")
-    print(f"Features: {list(X_realtime.columns)}")
-    print(f"Sample of feature values:")
-    for col in X_realtime.columns:
-        print(f"  {col}: {X_realtime[col].iloc[0]}")
-    
-    # Vérifier que nous avons des valeurs numériques valides
-    for col in X_realtime.columns:
-        if X_realtime[col].iloc[0] is None or pd.isna(X_realtime[col].iloc[0]):
-            print(f"Warning: Feature {col} has null value, setting to 0")
-            X_realtime[col] = X_realtime[col].fillna(0)
-    
-    # Sauvegarder les données préprocessées
-    preprocessed_path = f"{PREDICTIONS_PATH}/preprocessed_data_{weather_info['timestamp'].replace(':', '-')}.pkl"
-    X_realtime.to_pickle(preprocessed_path)
-    
-    return {
-        'preprocessed_path': preprocessed_path,
-        'actual_weather': mapped_weather,
-        'timestamp': weather_info['timestamp'],  # Déjà une string
-        'original_features': safe_json_serialize(weather_features)  # S'assurer de la sérialisabilité
-    }
+    print(f"\n✅ Successfully processed data for {len(processed_cities)} cities")
+    return processed_cities
 
 
 def load_model_from_mlflow(**context):
@@ -417,16 +529,16 @@ def load_model_from_mlflow(**context):
 
 
 def make_prediction(**context):
-    """Tâche 4: Faire la prédiction avec le modèle chargé"""
-    print("Making weather prediction...")
+    """Tâche 4: Faire la prédiction avec le modèle chargé pour toutes les villes"""
+    print("Making weather predictions for all cities...")
     
     # Récupérer les données des tâches précédentes
     ti = context['ti']
-    preprocessed_info = ti.xcom_pull(task_ids='preprocess_realtime_data')
+    all_cities_processed = ti.xcom_pull(task_ids='preprocess_realtime_data')
     model_info = ti.xcom_pull(task_ids='load_model_from_mlflow')
     
-    # Charger les données préprocessées
-    X_realtime = pd.read_pickle(preprocessed_info['preprocessed_path'])
+    if not all_cities_processed:
+        raise ValueError("No processed data received from preprocess_realtime_data task")
     
     # Charger le modèle et le label encoder
     with open(model_info['model_path'], 'rb') as f:
@@ -434,12 +546,6 @@ def make_prediction(**context):
     
     with open(model_info['label_encoder_path'], 'rb') as f:
         label_encoder = pickle.load(f)
-    
-    print(f"Model expects features: {getattr(model, 'feature_names_in_', 'Not available')}")
-    print(f"Real-time data features: {list(X_realtime.columns)}")
-    print(f"Real-time data shape: {X_realtime.shape}")
-    print(f"Real-time data sample:")
-    print(X_realtime.head())
     
     # Essayer de charger les features d'entraînement depuis le fichier local
     try:
@@ -456,207 +562,291 @@ def make_prediction(**context):
         expected_features = None
         print(f"Could not load training features: {str(e)}")
     
-    try:
-        # Vérifier la compatibilité des features
-        current_features = X_realtime.columns.tolist()
+    all_predictions = {}
+    
+    for city_key, city_data in all_cities_processed.items():
+        print(f"\n🔮 Making prediction for {city_data['city_info']['name']}...")
         
-        if expected_features is not None:
-            # Utiliser les features d'entraînement comme référence
-            missing_features = set(expected_features) - set(current_features)
-            extra_features = set(current_features) - set(expected_features)
+        # Charger les données préprocessées pour cette ville
+        X_realtime = pd.read_pickle(city_data['preprocessed_path'])
+        
+        print(f"Real-time data features for {city_data['city_info']['name']}: {list(X_realtime.columns)}")
+        print(f"Real-time data shape: {X_realtime.shape}")
+        
+        try:
+            # Vérifier la compatibilité des features
+            current_features = X_realtime.columns.tolist()
             
-            print(f"Missing features: {missing_features}")
-            print(f"Extra features: {extra_features}")
-            
-            if missing_features:
-                print(f"Adding missing features with default values: {missing_features}")
-                for feature in missing_features:
-                    X_realtime[feature] = 0
-            
-            if extra_features:
-                print(f"Removing extra features: {extra_features}")
-            
-            # Garder seulement les features d'entraînement dans le bon ordre
-            X_realtime = X_realtime[expected_features]
-            print(f"Features adjusted to match training data")
-            
-        elif hasattr(model, 'feature_names_in_'):
-            # Fallback sur les features du modèle si disponibles
-            expected_features = model.feature_names_in_
-            missing_features = set(expected_features) - set(current_features)
-            extra_features = set(current_features) - set(expected_features)
-            
-            if missing_features:
-                print(f"Warning: Missing features: {missing_features}")
-                for feature in missing_features:
-                    X_realtime[feature] = 0
-                    print(f"Added missing feature '{feature}' with default value 0")
-            
-            if extra_features:
-                print(f"Warning: Extra features will be ignored: {extra_features}")
-            
-            # Réorganiser les colonnes dans l'ordre attendu
-            X_realtime = X_realtime[expected_features]
-            print(f"Features reordered to match model expectations")
-        else:
-            print(f"Warning: Could not determine expected features. Model expects {model.num_features() if hasattr(model, 'num_features') else 'unknown'} features")
-            print(f"Current data has {X_realtime.shape[1]} features")
-            
-            # Utiliser num_features() pour ajuster automatiquement
-            if hasattr(model, 'num_features'):
-                expected_num_features = model.num_features()
-                current_num_features = X_realtime.shape[1]
+            if expected_features is not None:
+                # Utiliser les features d'entraînement comme référence
+                missing_features = set(expected_features) - set(current_features)
+                extra_features = set(current_features) - set(expected_features)
                 
-                if current_num_features < expected_num_features:
-                    # Ajouter des features manquantes avec valeur 0
-                    features_to_add = expected_num_features - current_num_features
-                    print(f"Adding {features_to_add} missing features with default value 0")
-                    
-                    for i in range(features_to_add):
-                        feature_name = f"missing_feature_{i}"
-                        X_realtime[feature_name] = 0
-                    
-                    print(f"Added features. New shape: {X_realtime.shape}")
-                    
-                elif current_num_features > expected_num_features:
-                    # Supprimer des features en trop
-                    features_to_remove = current_num_features - expected_num_features
-                    print(f"Removing {features_to_remove} extra features")
-                    # Supprimer les dernières colonnes
-                    X_realtime = X_realtime.iloc[:, :-features_to_remove]
-                    print(f"Removed features. New shape: {X_realtime.shape}")
-            else:
-                print("Cannot determine model's expected number of features")
-        
-        print(f"Final feature shape for prediction: {X_realtime.shape}")
-        
-        # Faire la prédiction
-        prediction_encoded = model.predict(X_realtime)[0]
-        prediction_proba = model.predict_proba(X_realtime)[0]
-        
-        # Décoder la prédiction
-        predicted_weather = label_encoder.inverse_transform([prediction_encoded])[0]
-        max_proba = max(prediction_proba)
-        
-        print(f"🔮 PREDICTION RESULTS:")
-        print(f"   Predicted weather: {predicted_weather}")
-        print(f"   Confidence: {max_proba:.2%}")
-        print(f"   Actual weather: {preprocessed_info['actual_weather']}")
-        
-        # Calculer toutes les probabilités par classe
-        class_probabilities = {}
-        
-        print(f"Label encoder classes: {label_encoder.classes_}")
-        print(f"Number of classes in label encoder: {len(label_encoder.classes_)}")
-        print(f"Prediction probabilities shape: {prediction_proba.shape}")
-        print(f"Prediction probabilities: {prediction_proba}")
-        
-        # S'assurer que nous n'essayons pas d'accéder à un index hors limites
-        max_classes = min(len(label_encoder.classes_), len(prediction_proba))
-        
-        for i in range(max_classes):
-            class_name = label_encoder.classes_[i]
-            prob_value = float(prediction_proba[i])
-            class_probabilities[class_name] = prob_value
+                if missing_features:
+                    print(f"  Adding missing features with default values: {missing_features}")
+                    for feature in missing_features:
+                        X_realtime[feature] = 0
+                
+                if extra_features:
+                    print(f"  Removing extra features: {extra_features}")
+                
+                # Garder seulement les features d'entraînement dans le bon ordre
+                X_realtime = X_realtime[expected_features]
+                print(f"  Features adjusted to match training data")
+                
+            elif hasattr(model, 'feature_names_in_'):
+                # Fallback sur les features du modèle si disponibles
+                expected_features = model.feature_names_in_
+                missing_features = set(expected_features) - set(current_features)
+                extra_features = set(current_features) - set(expected_features)
+                
+                if missing_features:
+                    print(f"  Warning: Missing features: {missing_features}")
+                    for feature in missing_features:
+                        X_realtime[feature] = 0
+                        print(f"  Added missing feature '{feature}' with default value 0")
+                
+                if extra_features:
+                    print(f"  Warning: Extra features will be ignored: {extra_features}")
+                
+                # Réorganiser les colonnes dans l'ordre attendu
+                X_realtime = X_realtime[expected_features]
+                print(f"  Features reordered to match model expectations")
             
-        # Si il y a plus de classes dans le label encoder que de probabilités, 
-        # mettre les probabilités manquantes à 0
-        if len(label_encoder.classes_) > len(prediction_proba):
-            for i in range(len(prediction_proba), len(label_encoder.classes_)):
+            print(f"  Final feature shape for prediction: {X_realtime.shape}")
+            
+            # Faire la prédiction
+            prediction_encoded = model.predict(X_realtime)[0]
+            prediction_proba = model.predict_proba(X_realtime)[0]
+            
+            # Décoder la prédiction
+            predicted_weather = label_encoder.inverse_transform([prediction_encoded])[0]
+            max_proba = max(prediction_proba)
+            
+            print(f"  🔮 PREDICTION RESULTS for {city_data['city_info']['name']}:")
+            print(f"     Predicted weather: {predicted_weather}")
+            print(f"     Confidence: {max_proba:.2%}")
+            print(f"     Actual weather: {city_data['actual_weather']}")
+            
+            # Calculer toutes les probabilités par classe
+            class_probabilities = {}
+            max_classes = min(len(label_encoder.classes_), len(prediction_proba))
+            
+            for i in range(max_classes):
                 class_name = label_encoder.classes_[i]
-                class_probabilities[class_name] = 0.0
-                print(f"Set missing probability for class '{class_name}' to 0.0")
+                prob_value = float(prediction_proba[i])
+                class_probabilities[class_name] = prob_value
+            
+            # Si il y a plus de classes dans le label encoder que de probabilités, 
+            # mettre les probabilités manquantes à 0
+            if len(label_encoder.classes_) > len(prediction_proba):
+                for i in range(len(prediction_proba), len(label_encoder.classes_)):
+                    class_name = label_encoder.classes_[i]
+                    class_probabilities[class_name] = 0.0
+            
+            # Vérifier si la prédiction est correcte
+            is_correct = predicted_weather == city_data['actual_weather']
+            print(f"     Prediction accuracy: {'✓ CORRECT' if is_correct else '✗ INCORRECT'}")
+            
+            # Préparer les résultats pour cette ville
+            city_prediction_results = {
+                'city': city_data['city_info']['name'],
+                'city_key': city_key,
+                'timestamp': city_data['timestamp'],
+                'actual_weather': city_data['actual_weather'],
+                'predicted_weather': predicted_weather,
+                'confidence': float(max_proba),
+                'is_correct': is_correct,
+                'class_probabilities': class_probabilities,
+                'model_run_id': model_info['run_id'],
+                'original_features': city_data['original_features'],
+                'location': {
+                    'latitude': city_data['city_info']['lat'],
+                    'longitude': city_data['city_info']['lon']
+                }
+            }
+            
+            # Sauvegarder les résultats pour cette ville
+            timestamp_str = city_data['timestamp'].replace(':', '-')
+            results_path = f"{PREDICTIONS_PATH}/prediction_results_{city_key}_{timestamp_str}.json"
+            with open(results_path, 'w') as f:
+                json.dump(city_prediction_results, f, indent=2)
+            
+            print(f"  ✓ Prediction results saved for {city_data['city_info']['name']}")
+            
+            all_predictions[city_key] = city_prediction_results
+            
+        except Exception as e:
+            print(f"  ❌ Error making prediction for {city_data['city_info']['name']}: {str(e)}")
+            # Continuer avec les autres villes même si une échoue
+            continue
+    
+    if not all_predictions:
+        raise ValueError("Could not make predictions for any city")
+    
+    print(f"\n✅ Successfully made predictions for {len(all_predictions)} cities")
+    
+    # S'assurer que toutes les valeurs de retour sont sérialisables pour XCom
+    return safe_json_serialize(all_predictions)
+
+
+def save_prediction_to_s3(**context):
+    """Tâche 6: Sauvegarder les prédictions dans un fichier CSV sur S3 (append mode)"""
+    print("Saving prediction results to CSV on S3...")
+    
+    # Récupérer les résultats de prédiction de la tâche précédente
+    ti = context['ti']
+    all_predictions = ti.xcom_pull(task_ids='make_prediction')
+    
+    if not all_predictions:
+        raise ValueError("No prediction results found to save to S3")
+    
+    try:
+        # Charger les credentials AWS depuis la connexion Airflow
+        aws_conn = BaseHook.get_connection('aws_default')
         
-        print(f"   All probabilities: {class_probabilities}")
+        # Configurer le client S3
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_conn.login,
+            aws_secret_access_key=aws_conn.password,
+            region_name=aws_conn.extra_dejson.get('region_name', 'us-east-1')
+        )
         
-        # Vérifier si la prédiction est correcte
-        is_correct = predicted_weather == preprocessed_info['actual_weather']
-        print(f"   Prediction accuracy: {'✓ CORRECT' if is_correct else '✗ INCORRECT'}")
+        bucket_name = 'my-jedha-bucket'
+        csv_file_name = 'meteo_predict/weather_predictions.csv'
         
-        # Préparer les résultats
-        prediction_results = {
-            'timestamp': preprocessed_info['timestamp'],
-            'actual_weather': preprocessed_info['actual_weather'],
-            'predicted_weather': predicted_weather,
-            'confidence': float(max_proba),
-            'is_correct': is_correct,
-            'class_probabilities': class_probabilities,
-            'model_run_id': model_info['run_id'],
-            'original_features': preprocessed_info['original_features']
+        # Préparer les nouvelles données pour le CSV
+        new_rows = []
+        current_timestamp = datetime.now().isoformat()
+        
+        for city_key, prediction_results in all_predictions.items():
+            # Convertir timestamp en format ISO si nécessaire
+            timestamp = prediction_results['timestamp']
+            if isinstance(timestamp, str):
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    formatted_timestamp = dt.isoformat()
+                except:
+                    formatted_timestamp = timestamp
+            else:
+                formatted_timestamp = timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
+            
+            new_row = {
+                'timestamp': formatted_timestamp,
+                'latitude': prediction_results['location']['latitude'],
+                'longitude': prediction_results['location']['longitude'],
+                'ville': prediction_results['city'],
+                'prediction': prediction_results['predicted_weather'],
+                'valeur_reelle': prediction_results['actual_weather'],
+                'confidence': prediction_results['confidence'],
+                'is_correct': prediction_results['is_correct'],
+                'dag_run_id': context['run_id'],
+                'execution_date': context['execution_date'].isoformat()
+            }
+            new_rows.append(new_row)
+            
+            print(f"  📊 {prediction_results['city']}: {prediction_results['predicted_weather']} vs {prediction_results['actual_weather']} (confidence: {prediction_results['confidence']:.2%})")
+        
+        # Créer un DataFrame avec les nouvelles données
+        new_df = pd.DataFrame(new_rows)
+        
+        # Essayer de télécharger le fichier CSV existant depuis S3
+        existing_df = None
+        file_exists = False
+        
+        try:
+            print(f"Checking if CSV file exists: {csv_file_name}")
+            response = s3_client.get_object(Bucket=bucket_name, Key=csv_file_name)
+            existing_csv_content = response['Body'].read().decode('utf-8')
+            
+            # Lire le CSV existant
+            from io import StringIO
+            existing_df = pd.read_csv(StringIO(existing_csv_content))
+            file_exists = True
+            print(f"✓ Existing CSV found with {len(existing_df)} rows")
+            
+        except s3_client.exceptions.NoSuchKey:
+            print("📄 CSV file doesn't exist yet, will create new one")
+            file_exists = False
+        except Exception as e:
+            print(f"⚠️  Error reading existing CSV: {str(e)}, will create new file")
+            file_exists = False
+        
+        # Combiner les données existantes avec les nouvelles
+        if file_exists and existing_df is not None and not existing_df.empty:
+            # Append les nouvelles données
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            print(f"📈 Appending {len(new_df)} new rows to existing {len(existing_df)} rows")
+        else:
+            # Créer un nouveau fichier
+            combined_df = new_df
+            print(f"🆕 Creating new CSV with {len(new_df)} rows")
+        
+        # Trier par timestamp pour garder l'ordre chronologique
+        combined_df = combined_df.sort_values('timestamp')
+        
+        # Sauvegarder en tant que CSV
+        csv_buffer = combined_df.to_csv(index=False)
+        
+        # Uploader le CSV mis à jour vers S3
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=csv_file_name,
+            Body=csv_buffer.encode('utf-8'),
+            ContentType='text/csv',
+            Metadata={
+                'dag-id': 'real_time_weather_prediction',
+                'total-rows': str(len(combined_df)),
+                'cities': ','.join([pred['city'] for pred in all_predictions.values()]),
+                'last-updated': current_timestamp,
+                'format': 'csv'
+            }
+        )
+        
+        s3_url = f"s3://{bucket_name}/{csv_file_name}"
+        
+        # Statistiques pour le rapport
+        total_predictions = len(all_predictions)
+        correct_predictions = sum(1 for pred in all_predictions.values() if pred['is_correct'])
+        accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+        
+        print(f"\n✅ CSV predictions successfully saved to S3:")
+        print(f"   📍 S3 URL: {s3_url}")
+        print(f"   📊 Total rows in CSV: {len(combined_df)}")
+        print(f"   🆕 New rows added: {len(new_df)}")
+        print(f"   🎯 Current batch accuracy: {accuracy:.2%}")
+        print(f"   🏙️  Cities: {', '.join([pred['city'] for pred in all_predictions.values()])}")
+        
+        # Afficher un échantillon des dernières lignes
+        print(f"\n📋 Sample of latest predictions:")
+        latest_rows = combined_df.tail(min(5, len(new_df)))
+        for _, row in latest_rows.iterrows():
+            print(f"   {row['ville']}: {row['prediction']} vs {row['valeur_reelle']} ({'✓' if row['is_correct'] else '✗'})")
+        
+        return {
+            'csv_s3_url': s3_url,
+            'csv_file_name': csv_file_name,
+            'total_rows': len(combined_df),
+            'new_rows_added': len(new_df),
+            'current_batch_accuracy': accuracy,
+            'cities_processed': list(all_predictions.keys()),
+            'file_existed': file_exists
         }
         
-        # Sauvegarder les résultats
-        results_path = f"{PREDICTIONS_PATH}/prediction_results_{model_info['timestamp']}.json"
-        with open(results_path, 'w') as f:
-            json.dump(prediction_results, f, indent=2)
-        
-        print(f"✓ Prediction results saved to: {results_path}")
-        
-        # S'assurer que toutes les valeurs de retour sont sérialisables pour XCom
-        return safe_json_serialize(prediction_results)
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchBucket':
+            print(f"❌ Error: Bucket '{bucket_name}' does not exist")
+        elif error_code == 'AccessDenied':
+            print(f"❌ Error: Access denied to bucket '{bucket_name}'. Check your AWS credentials.")
+        else:
+            print(f"❌ AWS S3 Error: {error_code} - {e.response['Error']['Message']}")
+        raise
         
     except Exception as e:
-        print(f"Error making prediction: {str(e)}")
+        print(f"❌ Error saving predictions to S3: {str(e)}")
         raise
-
-
-def log_prediction_to_mlflow(**context):
-    """Tâche 5: Logger la prédiction dans MLflow pour le monitoring"""
-    print("Logging prediction results to MLflow...")
-    
-    # Setup MLflow
-    setup_mlflow()
-    
-    # Récupérer les résultats de prédiction
-    ti = context['ti']
-    prediction_results = ti.xcom_pull(task_ids='make_prediction')
-    
-    # Créer un nouveau run MLflow pour les prédictions
-    experiment = mlflow.get_experiment_by_name("Meteo")
-    run_name = f"RealTime_Prediction_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
-    with mlflow.start_run(experiment_id=experiment.experiment_id, run_name=run_name) as run:
-        # Logger les métriques de prédiction
-        mlflow.log_metric("prediction_confidence", prediction_results['confidence'])
-        mlflow.log_metric("prediction_accuracy", 1.0 if prediction_results['is_correct'] else 0.0)
-        
-        # Logger les paramètres
-        mlflow.log_param("prediction_type", "real_time")
-        mlflow.log_param("data_source", "openweather_api")
-        mlflow.log_param("model_run_id", prediction_results['model_run_id'])
-        mlflow.log_param("actual_weather", prediction_results['actual_weather'])
-        mlflow.log_param("predicted_weather", prediction_results['predicted_weather'])
-        
-        # Logger les probabilités pour chaque classe
-        for class_name, prob in prediction_results['class_probabilities'].items():
-            mlflow.log_metric(f"prob_{class_name}", prob)
-        
-        # Logger les features originales
-        original_features = prediction_results['original_features']
-        for key, value in original_features.items():
-            if isinstance(value, (int, float)) and key != 'datetime':
-                mlflow.log_metric(f"feature_{key}", value)
-        
-        # Logger les résultats en tant qu'artefact
-        results_text = f"""Real-Time Weather Prediction Results
-Timestamp: {prediction_results['timestamp']}
-Actual Weather: {prediction_results['actual_weather']}
-Predicted Weather: {prediction_results['predicted_weather']}
-Confidence: {prediction_results['confidence']:.2%}
-Accuracy: {'CORRECT' if prediction_results['is_correct'] else 'INCORRECT'}
-
-Class Probabilities:
-{json.dumps(prediction_results['class_probabilities'], indent=2)}
-
-Original Weather Features:
-{json.dumps(original_features, indent=2, default=str)}
-        """
-        
-        mlflow.log_text(results_text, "prediction_results.txt")
-        
-        print(f"✓ Prediction logged to MLflow run: {run.info.run_id}")
-        
-        return run.info.run_id
 
 
 # Définition des tâches
@@ -684,13 +874,13 @@ task_predict = PythonOperator(
     dag=dag,
 )
 
-task_log_prediction = PythonOperator(
-    task_id='log_prediction_to_mlflow',
-    python_callable=log_prediction_to_mlflow,
+task_save_prediction_s3 = PythonOperator(
+    task_id='save_prediction_to_s3',
+    python_callable=save_prediction_to_s3,
     dag=dag,
 )
 
 # Définition des dépendances
 task_fetch_weather >> task_preprocess_realtime
 task_load_model >> task_predict
-task_preprocess_realtime >> task_predict >> task_log_prediction
+task_preprocess_realtime >> task_predict >> task_save_prediction_s3
