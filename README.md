@@ -1,6 +1,6 @@
-# Projet Météo Paris - ML Pipeline
+# Projet Météo - ML Pipeline
 
-Un projet de machine learning pour la prédiction météorologique à Paris avec une interface Streamlit, des pipelines Airflow et une architecture Docker.
+Un projet de machine learning pour la prédiction météorologique sur les grandes villes de France avec une interface Streamlit, des pipelines Airflow et une architecture Docker.
 
 ## 🚀 Vue d'ensemble
 
