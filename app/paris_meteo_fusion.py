@@ -33,7 +33,7 @@ def load_aws_credentials():
 
 load_aws_credentials()
 
-os.environ["APP_URI"] = "https://6a44-91-164-131-62.ngrok-free.app" #MLFLOW
+os.environ["APP_URI"] = "https://sbiwi-mlflow-server-demo.hf.space" #MLFLOW
 
 # Load Fichier CSV 
 
