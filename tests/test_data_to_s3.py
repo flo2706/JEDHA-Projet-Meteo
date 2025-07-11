@@ -32,7 +32,8 @@ class TestS3DataUploader:
     
     @patch.dict(os.environ, {
         'AWS_ACCESS_KEY_ID': 'test_key',
-        'AWS_SECRET_ACCESS_KEY': 'test_secret'
+        'AWS_SECRET_ACCESS_KEY': 'test_secret',
+        'AWS_DEFAULT_REGION': 'eu-west-2'
     })
     @patch('data_to_s3.boto3.client')
     def test_init_success(self, mock_boto3_client):
