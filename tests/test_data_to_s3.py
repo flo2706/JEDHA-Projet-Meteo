@@ -23,7 +23,7 @@ class TestS3DataUploader:
         self.test_env = {
             'AWS_ACCESS_KEY_ID': 'test_access_key',
             'AWS_SECRET_ACCESS_KEY': 'test_secret_key',
-            'AWS_DEFAULT_REGION': 'eu-north-1'
+            'AWS_DEFAULT_REGION': 'eu-west-2'
         }
         
         # Mock des variables d'environnement
@@ -52,7 +52,7 @@ class TestS3DataUploader:
             's3',
             aws_access_key_id='test_key',
             aws_secret_access_key='test_secret',
-            region_name='eu-north-1'
+            region_name='eu-west-2  '
         )
     
     @patch.dict(os.environ, {}, clear=True)
