@@ -113,11 +113,11 @@ def setup_mlflow():
     
     # Récupérer l'URI MLflow depuis les variables Airflow
     try:
-        mlflow_uri = Variable.get("mlflow_uri")
+        mlflow_uri = Variable.get("MLFLOW_TRACKING_URI")
         print(f"Using MLflow URI from Airflow variable: {mlflow_uri}")
     except Exception as e:
         # Fallback vers l'adresse par défaut si la variable n'existe pas
-        mlflow_uri = "https://sbiwi-mlflow-server-demo.hf.space"
+        mlflow_uri = "https://flodussart-mlflowprojectlead.hf.space"
         print(f"MLflow URI variable not found, using default: {mlflow_uri}")
         print(f"Error: {str(e)}")
     
