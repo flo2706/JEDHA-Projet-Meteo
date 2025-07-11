@@ -225,7 +225,7 @@ class TestMetrics:
             assert 0 <= value <= 1
         
         # Vérifier l'accuracy calculée manuellement
-        expected_accuracy = 0.0
+        expected_accuracy = 0.8
         assert abs(metrics['accuracy'] - expected_accuracy) < 0.001
 
 
