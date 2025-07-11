@@ -1,0 +1,7 @@
+altair
+pandas
+streamlit
+mlflow
+folium
+streamlit_folium
+boto3

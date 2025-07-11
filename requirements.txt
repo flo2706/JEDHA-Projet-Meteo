@@ -9,3 +9,4 @@ mlflow
 xgboost
 boto3
 dotenv
+botocore
