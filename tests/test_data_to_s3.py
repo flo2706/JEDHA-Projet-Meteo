@@ -53,7 +53,7 @@ class TestS3DataUploader:
             's3',
             aws_access_key_id='test_key',
             aws_secret_access_key='test_secret',
-            region_name='eu-west-2  '
+            region_name='eu-west-2'
         )
     
     @patch.dict(os.environ, {}, clear=True)
