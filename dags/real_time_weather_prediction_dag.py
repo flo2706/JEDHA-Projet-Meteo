@@ -719,10 +719,10 @@ def save_prediction_to_s3(**context):
             's3',
             aws_access_key_id=aws_conn.login,
             aws_secret_access_key=aws_conn.password,
-            region_name=aws_conn.extra_dejson.get('region_name', 'us-east-1')
+            region_name=aws_conn.extra_dejson.get('region_name', 'eu-west-2')
         )
         
-        bucket_name = 'my-jedha-bucket'
+        bucket_name = 'projetmeteo'
         csv_file_name = 'meteo_predict/weather_predictions.csv'
         
         # Préparer les nouvelles données pour le CSV
